@@ -36,47 +36,78 @@ export async function GET() {
       ORDER BY conversions DESC
     `),
 
-    // Anomaly detection: channels where CPC rose >30% vs prior week
+    // Anomaly detection: CPC spikes, spend swings, and conversion-rate drops vs prior week
     query<{
       channel: string;
-      current_cpc: string;
-      prior_cpc: string;
+      type: "cpc" | "spend" | "conversion_rate";
+      current_value: string;
+      prior_value: string;
       pct_change: string;
     }>(`
-      WITH current_week AS (
-        SELECT c.channel,
-               SUM(ds.spend) AS spend,
-               SUM(ds.clicks) AS clicks
-        FROM daily_stats ds
-        JOIN campaigns c ON c.id = ds.campaign_id
-        WHERE ds.date >= CURRENT_DATE - INTERVAL '7 days'
-          AND ds.clicks > 0
-        GROUP BY c.channel
-      ),
-      prior_week AS (
-        SELECT c.channel,
-               SUM(ds.spend) AS spend,
-               SUM(ds.clicks) AS clicks
+      WITH weekly AS (
+        SELECT
+          c.channel,
+          CASE
+            WHEN ds.date >= CURRENT_DATE - INTERVAL '7 days' THEN 'current'
+            ELSE 'prior'
+          END AS period,
+          SUM(ds.spend) AS spend,
+          SUM(ds.clicks) AS clicks,
+          SUM(ds.conversions) AS conversions
         FROM daily_stats ds
         JOIN campaigns c ON c.id = ds.campaign_id
         WHERE ds.date >= CURRENT_DATE - INTERVAL '14 days'
-          AND ds.date < CURRENT_DATE - INTERVAL '7 days'
-          AND ds.clicks > 0
-        GROUP BY c.channel
+        GROUP BY c.channel, period
+      ),
+      pivoted AS (
+        SELECT
+          channel,
+          MAX(spend) FILTER (WHERE period = 'current') AS cur_spend,
+          MAX(spend) FILTER (WHERE period = 'prior') AS pri_spend,
+          MAX(clicks) FILTER (WHERE period = 'current') AS cur_clicks,
+          MAX(clicks) FILTER (WHERE period = 'prior') AS pri_clicks,
+          MAX(conversions) FILTER (WHERE period = 'current') AS cur_conv,
+          MAX(conversions) FILTER (WHERE period = 'prior') AS pri_conv
+        FROM weekly
+        GROUP BY channel
       )
-      SELECT
-        cw.channel,
-        (cw.spend / NULLIF(cw.clicks, 0))::numeric(6,2) AS current_cpc,
-        (pw.spend / NULLIF(pw.clicks, 0))::numeric(6,2) AS prior_cpc,
+      SELECT channel, 'cpc' AS type,
+        (cur_spend / NULLIF(cur_clicks, 0))::numeric(6,2) AS current_value,
+        (pri_spend / NULLIF(pri_clicks, 0))::numeric(6,2) AS prior_value,
         ROUND(
-          ((cw.spend / NULLIF(cw.clicks, 0)) - (pw.spend / NULLIF(pw.clicks, 0)))
-          / NULLIF((pw.spend / NULLIF(pw.clicks, 0)), 0) * 100, 1
+          ((cur_spend / NULLIF(cur_clicks, 0)) - (pri_spend / NULLIF(pri_clicks, 0)))
+          / NULLIF((pri_spend / NULLIF(pri_clicks, 0)), 0) * 100, 1
         ) AS pct_change
-      FROM current_week cw
-      JOIN prior_week pw ON pw.channel = cw.channel
-      WHERE ((cw.spend / NULLIF(cw.clicks, 0)) - (pw.spend / NULLIF(pw.clicks, 0)))
-            / NULLIF((pw.spend / NULLIF(pw.clicks, 0)), 0) > 0.30
-      ORDER BY pct_change DESC
+      FROM pivoted
+      WHERE pri_clicks > 0 AND cur_clicks > 0
+        AND ((cur_spend / NULLIF(cur_clicks, 0)) - (pri_spend / NULLIF(pri_clicks, 0)))
+            / NULLIF((pri_spend / NULLIF(pri_clicks, 0)), 0) > 0.30
+
+      UNION ALL
+
+      SELECT channel, 'spend' AS type,
+        cur_spend::numeric(10,2) AS current_value,
+        pri_spend::numeric(10,2) AS prior_value,
+        ROUND((cur_spend - pri_spend) / NULLIF(pri_spend, 0) * 100, 1) AS pct_change
+      FROM pivoted
+      WHERE pri_spend > 0
+        AND ABS(cur_spend - pri_spend) / NULLIF(pri_spend, 0) > 0.40
+
+      UNION ALL
+
+      SELECT channel, 'conversion_rate' AS type,
+        ROUND((cur_conv::numeric / NULLIF(cur_clicks, 0)) * 100, 2) AS current_value,
+        ROUND((pri_conv::numeric / NULLIF(pri_clicks, 0)) * 100, 2) AS prior_value,
+        ROUND(
+          ((cur_conv::numeric / NULLIF(cur_clicks, 0)) - (pri_conv::numeric / NULLIF(pri_clicks, 0)))
+          / NULLIF((pri_conv::numeric / NULLIF(pri_clicks, 0)), 0) * 100, 1
+        ) AS pct_change
+      FROM pivoted
+      WHERE pri_clicks > 0 AND cur_clicks > 0 AND pri_conv > 0
+        AND ((cur_conv::numeric / NULLIF(cur_clicks, 0)) - (pri_conv::numeric / NULLIF(pri_clicks, 0)))
+            / NULLIF((pri_conv::numeric / NULLIF(pri_clicks, 0)), 0) < -0.30
+
+      ORDER BY type, pct_change DESC
     `),
   ]);
 
@@ -104,8 +135,9 @@ export async function GET() {
     })),
     anomalies: anomalies.map((r) => ({
       channel: r.channel,
-      currentCPC: parseFloat(r.current_cpc),
-      priorCPC: parseFloat(r.prior_cpc),
+      type: r.type,
+      currentValue: parseFloat(r.current_value),
+      priorValue: parseFloat(r.prior_value),
       pctChange: parseFloat(r.pct_change),
     })),
   });

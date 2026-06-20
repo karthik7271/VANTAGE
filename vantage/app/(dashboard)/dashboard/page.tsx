@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   LineChart,
   Line,
@@ -31,9 +32,21 @@ interface Metrics {
 
 interface Anomaly {
   channel: string;
-  currentCPC: number;
-  priorCPC: number;
+  type: "cpc" | "spend" | "conversion_rate";
+  currentValue: number;
+  priorValue: number;
   pctChange: number;
+}
+
+function anomalyLabel(a: Anomaly): string {
+  switch (a.type) {
+    case "cpc":
+      return `${a.channel} CPC up ${a.pctChange}% vs last week — $${a.priorValue.toFixed(2)} → $${a.currentValue.toFixed(2)}`;
+    case "spend":
+      return `${a.channel} spend ${a.pctChange > 0 ? "up" : "down"} ${Math.abs(a.pctChange)}% vs last week — $${fmt(a.priorValue)} → $${fmt(a.currentValue)}`;
+    case "conversion_rate":
+      return `${a.channel} conversion rate down ${Math.abs(a.pctChange)}% vs last week — ${a.priorValue.toFixed(2)}% → ${a.currentValue.toFixed(2)}%`;
+  }
 }
 
 interface DashboardData {
@@ -124,13 +137,16 @@ export default function DashboardPage() {
           </svg>
           <div>
             <p className="text-amber-400 text-sm font-medium">
-              Spend anomaly detected
+              {data.anomalies.length} anomal
+              {data.anomalies.length === 1 ? "y" : "ies"} detected
             </p>
             <div className="mt-1 space-y-0.5">
               {data.anomalies.map((a) => (
-                <p key={a.channel} className="text-xs text-amber-300/70">
-                  {a.channel} CPC up {a.pctChange}% vs last week — $
-                  {a.priorCPC.toFixed(2)} → ${a.currentCPC.toFixed(2)}
+                <p
+                  key={`${a.channel}-${a.type}`}
+                  className="text-xs text-amber-300/70"
+                >
+                  {anomalyLabel(a)}
                 </p>
               ))}
             </div>
@@ -256,12 +272,12 @@ export default function DashboardPage() {
             to give each channel its true credit.
           </p>
         </div>
-        <a
+        <Link
           href="/attribution"
           className="shrink-0 ml-4 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
         >
           View Attribution →
-        </a>
+        </Link>
       </div>
     </div>
   );

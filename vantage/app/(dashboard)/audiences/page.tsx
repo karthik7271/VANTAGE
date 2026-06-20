@@ -10,6 +10,16 @@ const CHANNEL_COLORS: Record<string, string> = {
   Email: "#FBBF24",
 };
 
+const CHANNELS = ["Meta", "Google Ads", "LinkedIn", "TikTok", "Email"];
+const BEHAVIOR_FILTERS = [
+  "Visited pricing page",
+  "Started trial",
+  "Viewed 3+ pages",
+  "Opened email in last 30 days",
+  "Churned in last 90 days",
+];
+const COMPANY_SIZES = ["Any", "1–50", "50–200", "200–1000", "1000+"];
+
 interface Segment {
   id: number;
   name: string;
@@ -27,7 +37,14 @@ function fmt(n: number) {
 export default function AudiencesPage() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
+  const [modalMode, setModalMode] = useState<"create" | "edit" | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [name, setName] = useState("");
+  const [channel, setChannel] = useState(CHANNELS[0]);
+  const [behaviorFilter, setBehaviorFilter] = useState(BEHAVIOR_FILTERS[0]);
+  const [companySize, setCompanySize] = useState(COMPANY_SIZES[0]);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
     fetch("/api/audiences")
@@ -39,6 +56,76 @@ export default function AudiencesPage() {
       .catch(() => setLoading(false));
   }, []);
 
+  function openCreateModal() {
+    setName("");
+    setChannel(CHANNELS[0]);
+    setBehaviorFilter(BEHAVIOR_FILTERS[0]);
+    setCompanySize(COMPANY_SIZES[0]);
+    setEditingId(null);
+    setModalMode("create");
+  }
+
+  function openEditModal(seg: Segment) {
+    setName(seg.name);
+    setChannel(seg.channel);
+    setEditingId(seg.id);
+    setModalMode("edit");
+  }
+
+  function closeModal() {
+    setModalMode(null);
+  }
+
+  async function handleSubmit() {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      if (modalMode === "create") {
+        const res = await fetch("/api/audiences", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, channel, behaviorFilter, companySize }),
+        });
+        const d = await res.json();
+        if (res.ok) {
+          setSegments((prev) => [d.segment, ...prev]);
+          closeModal();
+        }
+      } else if (modalMode === "edit" && editingId != null) {
+        const res = await fetch("/api/audiences", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: editingId, name, channel }),
+        });
+        const d = await res.json();
+        if (res.ok) {
+          setSegments((prev) =>
+            prev.map((s) => (s.id === editingId ? d.segment : s)),
+          );
+          closeModal();
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    setDeletingId(id);
+    try {
+      const res = await fetch("/api/audiences", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (res.ok) {
+        setSegments((prev) => prev.filter((s) => s.id !== id));
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <div className="p-8 space-y-6">
       <div className="flex items-start justify-between">
@@ -49,7 +136,7 @@ export default function AudiencesPage() {
           </p>
         </div>
         <button
-          onClick={() => setShowModal(true)}
+          onClick={openCreateModal}
           className="bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
         >
           <svg
@@ -137,9 +224,21 @@ export default function AudiencesPage() {
                       })}
                     </td>
                     <td className="text-right px-5 py-3">
-                      <button className="text-xs text-violet-400 hover:text-violet-300 transition-colors">
-                        Edit
-                      </button>
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          onClick={() => openEditModal(seg)}
+                          className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(seg.id)}
+                          disabled={deletingId === seg.id}
+                          className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+                        >
+                          {deletingId === seg.id ? "..." : "Delete"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -147,14 +246,16 @@ export default function AudiencesPage() {
         </table>
       </div>
 
-      {/* Create Segment Modal */}
-      {showModal && (
+      {/* Create / Edit Segment Modal */}
+      {modalMode && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
           <div className="bg-[#111318] border border-gray-800 rounded-xl w-full max-w-md p-6">
             <div className="flex items-center justify-between mb-5">
-              <h2 className="text-white font-medium">Create Segment</h2>
+              <h2 className="text-white font-medium">
+                {modalMode === "create" ? "Create Segment" : "Edit Segment"}
+              </h2>
               <button
-                onClick={() => setShowModal(false)}
+                onClick={closeModal}
                 className="text-gray-500 hover:text-gray-300"
               >
                 <svg
@@ -175,6 +276,8 @@ export default function AudiencesPage() {
                   Segment Name
                 </label>
                 <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                   className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500"
                   placeholder="e.g. Enterprise Decision Makers"
                 />
@@ -183,51 +286,66 @@ export default function AudiencesPage() {
                 <label className="block text-xs text-gray-400 mb-1.5">
                   Channel
                 </label>
-                <select className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500">
-                  {["Meta", "Google Ads", "LinkedIn", "TikTok", "Email"].map(
-                    (c) => (
-                      <option key={c}>{c}</option>
-                    ),
-                  )}
+                <select
+                  value={channel}
+                  onChange={(e) => setChannel(e.target.value)}
+                  className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500"
+                >
+                  {CHANNELS.map((c) => (
+                    <option key={c}>{c}</option>
+                  ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1.5">
-                  Behavior Filter
-                </label>
-                <select className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500">
-                  <option>Visited pricing page</option>
-                  <option>Started trial</option>
-                  <option>Viewed 3+ pages</option>
-                  <option>Opened email in last 30 days</option>
-                  <option>Churned in last 90 days</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1.5">
-                  Company Size
-                </label>
-                <select className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500">
-                  <option>Any</option>
-                  <option>1–50</option>
-                  <option>50–200</option>
-                  <option>200–1000</option>
-                  <option>1000+</option>
-                </select>
-              </div>
+              {modalMode === "create" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">
+                      Behavior Filter
+                    </label>
+                    <select
+                      value={behaviorFilter}
+                      onChange={(e) => setBehaviorFilter(e.target.value)}
+                      className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500"
+                    >
+                      {BEHAVIOR_FILTERS.map((b) => (
+                        <option key={b}>{b}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">
+                      Company Size
+                    </label>
+                    <select
+                      value={companySize}
+                      onChange={(e) => setCompanySize(e.target.value)}
+                      className="w-full bg-[#1A1D24] border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500"
+                    >
+                      {COMPANY_SIZES.map((c) => (
+                        <option key={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button
-                onClick={() => setShowModal(false)}
+                onClick={closeModal}
                 className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
               >
                 Cancel
               </button>
               <button
-                onClick={() => setShowModal(false)}
-                className="bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                onClick={handleSubmit}
+                disabled={saving || !name.trim()}
+                className="bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
               >
-                Create Segment
+                {saving
+                  ? "Saving..."
+                  : modalMode === "create"
+                    ? "Create Segment"
+                    : "Save Changes"}
               </button>
             </div>
           </div>

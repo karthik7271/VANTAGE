@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   BarChart,
   Bar,
@@ -10,7 +11,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
-  Legend,
 } from "recharts";
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -34,6 +34,16 @@ interface ChannelRow {
   delta: number;
 }
 
+interface CampaignRow {
+  id: number;
+  name: string;
+  channel: string;
+  budget: number;
+  spend: number;
+  clicks: number;
+  conversions: number;
+}
+
 const MODEL_LABELS: Record<Model, string> = {
   shapleyPct: "Shapley (Data-driven)",
   lastTouchPct: "Last Touch",
@@ -50,18 +60,30 @@ export default function AttributionPage() {
   const [period, setPeriod] = useState(30);
   const [model, setModel] = useState<Model>("shapleyPct");
   const [data, setData] = useState<ChannelRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadedPeriod, setLoadedPeriod] = useState<number | null>(null);
+  const loading = loadedPeriod !== period;
+  const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
     fetch(`/api/attribution?period=${period}`)
       .then((r) => r.json())
       .then((d) => {
         setData(d.comparison ?? []);
-        setLoading(false);
+        setLoadedPeriod(period);
       })
-      .catch(() => setLoading(false));
+      .catch(() => setLoadedPeriod(period));
   }, [period]);
+
+  useEffect(() => {
+    fetch("/api/campaigns")
+      .then((r) => r.json())
+      .then((d) => {
+        setCampaigns(d.campaigns ?? []);
+        setCampaignsLoading(false);
+      })
+      .catch(() => setCampaignsLoading(false));
+  }, []);
 
   const sorted = [...data].sort((a, b) => b[model] - a[model]);
 
@@ -304,6 +326,70 @@ export default function AttributionPage() {
                     </tr>
                   );
                 })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Campaign drill-down */}
+      <div className="bg-[#111318] border border-gray-800 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-800">
+          <p className="text-sm font-medium text-gray-300">Campaigns</p>
+          <p className="text-xs text-gray-600 mt-0.5">
+            Click a campaign for its individual performance breakdown.
+          </p>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-500 border-b border-gray-800">
+              <th className="text-left px-5 py-3">Campaign</th>
+              <th className="text-left px-5 py-3">Channel</th>
+              <th className="text-right px-5 py-3">Spend</th>
+              <th className="text-right px-5 py-3">Conversions</th>
+              <th className="text-right px-5 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {campaignsLoading
+              ? [...Array(5)].map((_, i) => (
+                  <tr key={i} className="border-b border-gray-800/50">
+                    <td colSpan={5} className="px-5 py-3">
+                      <div className="h-4 bg-gray-800 animate-pulse rounded" />
+                    </td>
+                  </tr>
+                ))
+              : campaigns.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="border-b border-gray-800/50 hover:bg-gray-800/20 transition-colors"
+                  >
+                    <td className="px-5 py-3 text-gray-200">{c.name}</td>
+                    <td className="px-5 py-3">
+                      <span
+                        className="text-xs px-2.5 py-1 rounded-full font-medium"
+                        style={{
+                          background: `${CHANNEL_COLORS[c.channel]}20`,
+                          color: CHANNEL_COLORS[c.channel],
+                        }}
+                      >
+                        {c.channel}
+                      </span>
+                    </td>
+                    <td className="text-right px-5 py-3 text-gray-400">
+                      ${(c.spend / 1000).toFixed(1)}k
+                    </td>
+                    <td className="text-right px-5 py-3 text-gray-400">
+                      {c.conversions.toLocaleString()}
+                    </td>
+                    <td className="text-right px-5 py-3">
+                      <Link
+                        href={`/attribution/${c.id}`}
+                        className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                      >
+                        View →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
           </tbody>
         </table>
       </div>

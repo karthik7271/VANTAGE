@@ -1,8 +1,9 @@
 import { Pool } from "pg";
+import awsCaBundle from "aws-ssl-profiles";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production" ? true : false,
+  ssl: awsCaBundle,
 });
 
 export async function query<T = Record<string, unknown>>(
