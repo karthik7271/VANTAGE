@@ -118,7 +118,7 @@ flowchart LR
     Vercel -->|NextAuth.js credentials| Auth["Session cookie<br/>JWT"]
     Vercel -->|"pg (node-postgres)<br/>TLS via aws-ssl-profiles"| Aurora[("Amazon Aurora<br/>PostgreSQL Serverless v2")]
     Vercel -->|InvokeModel| Bedrock["Amazon Bedrock<br/>Claude 3.5 Haiku"]
-    Cron["Vercel Cron<br/>every 6h"] -->|"GET /api/cron/<br/>recompute-attribution"| Vercel
+    Cron["Vercel Cron<br/>daily"] -->|"GET /api/cron/<br/>recompute-attribution"| Vercel
     Cron -->|"TS Shapley engine<br/>+ REFRESH MATVIEW"| Aurora
     Meta["Meta Marketing API"] -->|"Sync now"<br/>(Settings page)| Vercel
     Seed["Python<br/>seed.py"] -->|"synthetic seed data"| Aurora
@@ -132,7 +132,7 @@ flowchart LR
     style Seed fill:#3776AB,color:#fff
 ```
 
-Every page is server-rendered or API-backed by direct SQL against Aurora — there is no caching layer and no mock data path in production. Three pieces run out-of-band on a schedule rather than per-request: a **Vercel Cron job** recomputes Shapley/last-touch/linear attribution and refreshes the dashboard rollup every 6 hours (`app/api/cron/recompute-attribution`), an **Amazon Bedrock** call turns the attribution comparison into a plain-English executive insight on demand (`app/api/attribution/insight`), and a **Meta Marketing API sync** pulls real campaign/spend/conversion data into the same `campaigns`/`daily_stats` tables the seeded data lives in, triggered from the Settings page.
+Every page is server-rendered or API-backed by direct SQL against Aurora — there is no caching layer and no mock data path in production. Three pieces run out-of-band on a schedule rather than per-request: a **Vercel Cron job** recomputes Shapley/last-touch/linear attribution and refreshes the dashboard rollup daily (`app/api/cron/recompute-attribution`), an **Amazon Bedrock** call turns the attribution comparison into a plain-English executive insight on demand (`app/api/attribution/insight`), and a **Meta Marketing API sync** pulls real campaign/spend/conversion data into the same `campaigns`/`daily_stats` tables the seeded data lives in, triggered from the Settings page.
 
 ### Why Aurora PostgreSQL
 
@@ -222,11 +222,11 @@ erDiagram
 | Frontend | Next.js 16 (App Router) + React 19 + TypeScript | Route groups (`(dashboard)`) keep the authenticated shell separate from `/login` |
 | Styling | Tailwind CSS v4 | Dark, data-dense SaaS aesthetic with minimal custom CSS |
 | Charts | Recharts | Daily spend line, channel conversion bars, Shapley comparison bars |
-| Auth | NextAuth.js v5 (Credentials provider) | Single demo account; `authorized` callback gates every route except `/login` |
+| Auth | NextAuth.js v5 (Credentials provider) | Single demo account; `proxy.ts` gates every route except `/login` and self-authed API routes |
 | Database | Amazon Aurora PostgreSQL (Serverless v2) | Analytical SQL (CTEs, `FILTER`, windowing) at production scale |
 | DB driver | `pg` (node-postgres) + `aws-ssl-profiles` | Real AWS RDS CA bundle for full TLS chain validation — no `rejectUnauthorized: false` anywhere |
 | Attribution engine | Python (`shapley.py`) + TypeScript port (`lib/attribution/shapley.ts`) | Exact subset enumeration ≤12 channels, Monte Carlo sampling beyond that |
-| Scheduled recompute | Vercel Cron (`vercel.json`) | Recomputes attribution + refreshes the dashboard rollup every 6 hours, no manual script run needed |
+| Scheduled recompute | Vercel Cron (`vercel.json`) | Recomputes attribution + refreshes the dashboard rollup daily, no manual script run needed |
 | AI insights | Amazon Bedrock (Claude 3.5 Haiku) via `@aws-sdk/client-bedrock-runtime` | Turns the attribution comparison table into a quantitative executive narrative; degrades to a deterministic template if AWS isn't configured |
 | Live data ingestion | Meta Marketing API (`lib/integrations/meta.ts`) | Pulls real campaign + daily insight data into the same schema the seed data uses, via a System User token (no App Review needed for your own ad account) |
 | Seed data | Python (`seed.py`) | 12 campaigns, 5 channels, ~500 customer journeys, ~1,800 touchpoints, 90 days of daily stats |
