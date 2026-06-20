@@ -9,7 +9,10 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isLoggedIn = !!req.auth?.user;
 
-  if (SELF_AUTHED_API_PREFIXES.some((p) => pathname.startsWith(p))) {
+  const isSelfAuthed = SELF_AUTHED_API_PREFIXES.some(
+    (p) => pathname === p || pathname.startsWith(p + "/"),
+  );
+  if (isSelfAuthed) {
     return NextResponse.next();
   }
 
