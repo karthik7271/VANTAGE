@@ -1,12 +1,43 @@
+"use client";
+
+import { useState } from "react";
+
 const CHANNELS = [
-  { name: "Meta", color: "#818CF8", synced: "2 hours ago" },
-  { name: "Google Ads", color: "#34D399", synced: "1 hour ago" },
-  { name: "LinkedIn", color: "#60A5FA", synced: "3 hours ago" },
-  { name: "TikTok", color: "#F472B6", synced: "5 hours ago" },
-  { name: "Email", color: "#FBBF24", synced: "30 minutes ago" },
+  { name: "Meta", color: "#818CF8", synced: "2 hours ago", live: true },
+  { name: "Google Ads", color: "#34D399", synced: "1 hour ago", live: false },
+  { name: "LinkedIn", color: "#60A5FA", synced: "3 hours ago", live: false },
+  { name: "TikTok", color: "#F472B6", synced: "5 hours ago", live: false },
+  { name: "Email", color: "#FBBF24", synced: "30 minutes ago", live: false },
 ];
 
+type SyncState =
+  | { status: "idle" }
+  | { status: "syncing" }
+  | { status: "success"; campaigns: number; dailyStats: number }
+  | { status: "error"; message: string };
+
 export default function SettingsPage() {
+  const [metaSync, setMetaSync] = useState<SyncState>({ status: "idle" });
+
+  async function syncMeta() {
+    setMetaSync({ status: "syncing" });
+    try {
+      const res = await fetch("/api/integrations/meta/sync", { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Sync failed");
+      setMetaSync({
+        status: "success",
+        campaigns: body.campaignsSynced,
+        dailyStats: body.dailyStatsSynced,
+      });
+    } catch (err) {
+      setMetaSync({
+        status: "error",
+        message: err instanceof Error ? err.message : "Sync failed",
+      });
+    }
+  }
+
   return (
     <div className="p-8 space-y-6 max-w-2xl">
       <div>
@@ -21,7 +52,7 @@ export default function SettingsPage() {
             Connected Channels
           </p>
           <p className="text-xs text-gray-600 mt-0.5">
-            Data is synced automatically every hour
+            Data is synced automatically every 6 hours
           </p>
         </div>
         <div className="divide-y divide-gray-800">
@@ -40,15 +71,34 @@ export default function SettingsPage() {
                 <div>
                   <p className="text-sm text-gray-200">{ch.name}</p>
                   <p className="text-xs text-gray-600">
-                    Last synced {ch.synced}
+                    {ch.name === "Meta" && metaSync.status === "success"
+                      ? `Synced ${metaSync.campaigns} campaigns, ${metaSync.dailyStats} daily rows`
+                      : ch.name === "Meta" && metaSync.status === "error"
+                        ? metaSync.message
+                        : `Last synced ${ch.synced}`}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                <span className="text-xs text-emerald-400 font-medium">
-                  Connected
-                </span>
+              <div className="flex items-center gap-3">
+                {ch.name === "Meta" && (
+                  <button
+                    onClick={syncMeta}
+                    disabled={metaSync.status === "syncing"}
+                    className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    {metaSync.status === "syncing" ? "Syncing…" : "Sync now"}
+                  </button>
+                )}
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      ch.live ? "bg-emerald-500" : "bg-emerald-500/40"
+                    }`}
+                  />
+                  <span className="text-xs text-emerald-400 font-medium">
+                    Connected
+                  </span>
+                </div>
               </div>
             </div>
           ))}

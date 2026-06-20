@@ -11,6 +11,8 @@ A B2B marketing intelligence platform that tells you which channel *actually* dr
 ![Aurora PostgreSQL](https://img.shields.io/badge/Aurora-PostgreSQL-527FFF?style=flat-square&logo=amazonaws&logoColor=white)
 ![Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-000000?style=flat-square&logo=vercel)
 ![NextAuth](https://img.shields.io/badge/Auth-NextAuth.js-7C3AED?style=flat-square)
+![Bedrock](https://img.shields.io/badge/AI-Amazon%20Bedrock-FF9900?style=flat-square&logo=amazonaws&logoColor=white)
+![Meta](https://img.shields.io/badge/Live%20data-Meta%20Marketing%20API-1877F2?style=flat-square&logo=meta&logoColor=white)
 
 Built for **H0: Hack the Zero Stack with Vercel v0 and AWS Databases**
 
@@ -55,7 +57,7 @@ On the live seed data, this surfaces a concrete, demo-ready "aha":
 </td>
 <td width="50%">
 
-**Attribution** — Shapley vs. last-touch vs. linear, with the undervalued-channel callout
+**Attribution** — Shapley vs. last-touch vs. linear, with an AI-generated executive insight (Amazon Bedrock, template fallback) above the undervalued-channel callout
 
 <img src="docs/screenshots/attribution.png" width="100%">
 
@@ -87,7 +89,7 @@ On the live seed data, this surfaces a concrete, demo-ready "aha":
 </td>
 <td width="50%">
 
-**Settings** — connected-channel status and team
+**Settings** — connected-channel status, team, and a live "Sync now" trigger for the Meta Marketing API connector
 
 <img src="docs/screenshots/settings.png" width="100%">
 
@@ -115,21 +117,34 @@ flowchart LR
     User["Browser"] -->|HTTPS| Vercel["Vercel Edge<br/>Next.js App Router"]
     Vercel -->|NextAuth.js credentials| Auth["Session cookie<br/>JWT"]
     Vercel -->|"pg (node-postgres)<br/>TLS via aws-ssl-profiles"| Aurora[("Amazon Aurora<br/>PostgreSQL Serverless v2")]
-    Shapley["Python<br/>shapley.py"] -->|"writes once,<br/>pre-computed"| Aurora
+    Vercel -->|InvokeModel| Bedrock["Amazon Bedrock<br/>Claude 3.5 Haiku"]
+    Cron["Vercel Cron<br/>every 6h"] -->|"GET /api/cron/<br/>recompute-attribution"| Vercel
+    Cron -->|"TS Shapley engine<br/>+ REFRESH MATVIEW"| Aurora
+    Meta["Meta Marketing API"] -->|"Sync now"<br/>(Settings page)| Vercel
     Seed["Python<br/>seed.py"] -->|"synthetic seed data"| Aurora
     Aurora -->|"campaigns, daily_stats,<br/>touchpoints, journeys"| Vercel
 
     style Aurora fill:#527FFF,color:#fff
     style Vercel fill:#000,color:#fff
-    style Shapley fill:#3776AB,color:#fff
+    style Bedrock fill:#FF9900,color:#000
+    style Cron fill:#000,color:#fff
+    style Meta fill:#1877F2,color:#fff
     style Seed fill:#3776AB,color:#fff
 ```
 
-Every page is server-rendered or API-backed by direct SQL against Aurora — there is no caching layer and no mock data path in production. The Shapley computation is the one piece deliberately run out-of-band: it's `O(2^n)` per channel (trivial at n=5 channels) but there's no reason to recompute it on every page load, so `shapley.py` runs once per seed/update cycle and writes results into `attribution_results`, which the app just reads.
+Every page is server-rendered or API-backed by direct SQL against Aurora — there is no caching layer and no mock data path in production. Three pieces run out-of-band on a schedule rather than per-request: a **Vercel Cron job** recomputes Shapley/last-touch/linear attribution and refreshes the dashboard rollup every 6 hours (`app/api/cron/recompute-attribution`), an **Amazon Bedrock** call turns the attribution comparison into a plain-English executive insight on demand (`app/api/attribution/insight`), and a **Meta Marketing API sync** pulls real campaign/spend/conversion data into the same `campaigns`/`daily_stats` tables the seeded data lives in, triggered from the Settings page.
 
 ### Why Aurora PostgreSQL
 
 The anomaly-detection and attribution queries lean on window functions, `FILTER`, and multi-CTE aggregation over tens of thousands of touchpoint rows — exactly the analytical workload Aurora PostgreSQL is built for, and the same engine class enterprises run this kind of pipeline on in production. Serverless v2 also means the demo database scales to zero between hackathon judging sessions instead of idling at full cost.
+
+### Scaling past the demo
+
+Three deliberate decisions target the gap between "hackathon demo" and "doesn't fall over with real traffic":
+
+- **Materialized rollup.** The dashboard's hottest query (`daily_stats` JOIN `campaigns`, GROUP BY channel/date) is pre-aggregated into `channel_daily_rollup`, refreshed via `REFRESH MATERIALIZED VIEW CONCURRENTLY` so refreshes never block live reads. See `schema.sql`.
+- **Channel count stops being hardcoded.** The original Python engine hardcoded 5 channels; the TypeScript port (`lib/attribution/shapley.ts`) derives the channel set from `SELECT DISTINCT channel FROM touchpoints`, so adding Google Ads or LinkedIn via real API sync doesn't require a code change.
+- **Exact enumeration degrades gracefully.** Shapley's exact computation is `O(n · 2^(n-1))` — fine at 5 channels, infeasible past ~20. Past `EXACT_CHANNEL_LIMIT` (12), the engine switches to Monte Carlo permutation sampling (20,000 samples), which converges to the same value in bounded time regardless of channel count.
 
 ---
 
@@ -147,6 +162,7 @@ erDiagram
         date start_date
         date end_date
         numeric budget
+        text external_id "platform campaign ID, set by real syncs"
     }
     daily_stats {
         serial id
@@ -195,7 +211,7 @@ erDiagram
     }
 ```
 
-`touchpoints` and `customer_journeys` are the only tables `shapley.py` reads from; everything it produces lands in `attribution_results`, keyed uniquely on `(channel, model, period_days)` so re-runs upsert cleanly. Full DDL: [`../schema.sql`](../schema.sql).
+`touchpoints` and `customer_journeys` are the only tables `shapley.py` (or its TypeScript port) reads from; everything it produces lands in `attribution_results`, keyed uniquely on `(channel, model, period_days)` so re-runs upsert cleanly. `campaigns.external_id` is unique per `(channel, external_id)` when set, so the Meta sync route can upsert a campaign on every run instead of duplicating it. `channel_daily_rollup` is a materialized view (not pictured above) pre-aggregating `daily_stats` by channel/day for the dashboard. Full DDL: [`../schema.sql`](../schema.sql).
 
 ---
 
@@ -209,7 +225,10 @@ erDiagram
 | Auth | NextAuth.js v5 (Credentials provider) | Single demo account; `authorized` callback gates every route except `/login` |
 | Database | Amazon Aurora PostgreSQL (Serverless v2) | Analytical SQL (CTEs, `FILTER`, windowing) at production scale |
 | DB driver | `pg` (node-postgres) + `aws-ssl-profiles` | Real AWS RDS CA bundle for full TLS chain validation — no `rejectUnauthorized: false` anywhere |
-| Attribution engine | Python (`shapley.py`) | Exact Shapley values via subset enumeration (2⁵ subsets/channel — trivial at this scale) |
+| Attribution engine | Python (`shapley.py`) + TypeScript port (`lib/attribution/shapley.ts`) | Exact subset enumeration ≤12 channels, Monte Carlo sampling beyond that |
+| Scheduled recompute | Vercel Cron (`vercel.json`) | Recomputes attribution + refreshes the dashboard rollup every 6 hours, no manual script run needed |
+| AI insights | Amazon Bedrock (Claude 3.5 Haiku) via `@aws-sdk/client-bedrock-runtime` | Turns the attribution comparison table into a quantitative executive narrative; degrades to a deterministic template if AWS isn't configured |
+| Live data ingestion | Meta Marketing API (`lib/integrations/meta.ts`) | Pulls real campaign + daily insight data into the same schema the seed data uses, via a System User token (no App Review needed for your own ad account) |
 | Seed data | Python (`seed.py`) | 12 campaigns, 5 channels, ~500 customer journeys, ~1,800 touchpoints, 90 days of daily stats |
 | Deployment | Vercel | Edge-deployed Next.js, env-var-scoped secrets, instant rollback |
 
@@ -228,6 +247,9 @@ All routes are gated by the NextAuth `authorized` callback — unauthenticated r
 | `/api/campaigns/[id]` | `GET` | Single campaign drill-down |
 | `/api/audiences` | `GET`, `POST`, `PATCH`, `DELETE` | Full CRUD on audience segments — the one shell page wired to real persistence |
 | `/api/creatives` | `GET`, `PATCH` | Creative list + Kanban status transitions (`pending → approved/rejected → live`) |
+| `/api/attribution/insight?days=30\|60\|90` | `GET` | Bedrock-generated (or template-fallback) executive narrative over the attribution comparison |
+| `/api/cron/recompute-attribution` | `GET` | Recomputes Shapley/last-touch/linear for 30/60/90-day windows and refreshes `channel_daily_rollup`; gated by `CRON_SECRET` bearer auth when set |
+| `/api/integrations/meta/sync` | `POST` | Pulls live campaigns + daily insights from the Meta Marketing API and upserts into `campaigns`/`daily_stats` |
 
 ---
 
@@ -270,10 +292,24 @@ vercel link
 vercel env add DATABASE_URL production
 vercel env add NEXTAUTH_SECRET production
 vercel env add NEXTAUTH_URL production   # your production URL, e.g. https://your-app.vercel.app
+
+# Cron auth — Vercel sends this as a Bearer token on scheduled invocations
+vercel env add CRON_SECRET production
+
+# AWS Bedrock (optional — insight panel falls back to a template without these)
+vercel env add AWS_REGION production
+vercel env add AWS_ACCESS_KEY_ID production
+vercel env add AWS_SECRET_ACCESS_KEY production
+vercel env add BEDROCK_MODEL_ID production
+
+# Meta Marketing API (optional — Settings "Sync now" 400s with a clear message without these)
+vercel env add META_ACCESS_TOKEN production
+vercel env add META_AD_ACCOUNT_ID production
+
 vercel deploy --prod
 ```
 
-NextAuth v5 auto-trusts the host header on Vercel, so `NEXTAUTH_URL` isn't strictly load-bearing — but setting it explicitly avoids any ambiguity in redirect URLs.
+NextAuth v5 auto-trusts the host header on Vercel, so `NEXTAUTH_URL` isn't strictly load-bearing — but setting it explicitly avoids any ambiguity in redirect URLs. `vercel.json` registers the `/api/cron/recompute-attribution` schedule automatically on deploy — no separate cron setup needed.
 
 ---
 
@@ -284,18 +320,28 @@ vantage/
 ├── app/
 │   ├── (dashboard)/            # authenticated route group
 │   │   ├── dashboard/          # metrics + anomaly banner
-│   │   ├── attribution/        # Shapley comparison + campaign drill-down
+│   │   ├── attribution/        # Shapley comparison + AI insight + campaign drill-down
 │   │   ├── audiences/          # segment CRUD
 │   │   ├── creatives/          # Kanban approval workflow
-│   │   ├── settings/           # connected channels (static)
+│   │   ├── settings/           # connected channels + live Meta "Sync now"
 │   │   └── layout.tsx          # sidebar + auth gate shell
-│   ├── api/                    # route handlers (see API reference above)
+│   ├── api/
+│   │   ├── attribution/insight/         # Bedrock/template AI narrative
+│   │   ├── cron/recompute-attribution/  # scheduled Shapley recompute + rollup refresh
+│   │   ├── integrations/meta/sync/      # Meta Marketing API ingestion
+│   │   └── ...                          # dashboard, campaigns, audiences, creatives, auth
 │   └── login/                  # public sign-in page
 ├── components/                 # shared UI (Sidebar, etc.)
 ├── lib/
-│   ├── auth.ts                 # NextAuth config
-│   └── db.ts                   # pg Pool + Aurora TLS config
+│   ├── attribution/
+│   │   ├── shapley.ts           # TS port: exact + Monte Carlo Shapley, last-touch, linear
+│   │   └── comparison.ts        # shared attribution comparison query
+│   ├── integrations/meta.ts     # Meta Graph API v21.0 connector
+│   ├── bedrock.ts                # Bedrock client + template fallback
+│   ├── auth.ts                  # NextAuth config
+│   └── db.ts                    # pg Pool + Aurora TLS config
 ├── docs/screenshots/            # README screenshots
+├── vercel.json                  # cron schedule
 └── ...
 ```
 

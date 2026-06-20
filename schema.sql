@@ -1,13 +1,23 @@
 -- Vantage — Aurora PostgreSQL Schema
 
 CREATE TABLE IF NOT EXISTS campaigns (
-  id          SERIAL PRIMARY KEY,
-  name        TEXT NOT NULL,
-  channel     TEXT NOT NULL CHECK (channel IN ('Meta', 'Google Ads', 'LinkedIn', 'TikTok', 'Email')),
-  start_date  DATE NOT NULL,
-  end_date    DATE NOT NULL,
-  budget      NUMERIC(12, 2) NOT NULL
+  id           SERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  channel      TEXT NOT NULL CHECK (channel IN ('Meta', 'Google Ads', 'LinkedIn', 'TikTok', 'Email')),
+  start_date   DATE NOT NULL,
+  end_date     DATE NOT NULL,
+  budget       NUMERIC(12, 2) NOT NULL
 );
+
+-- Platform-native campaign ID (e.g. Meta's campaign_id), set by real ad
+-- platform sync jobs so re-syncing upserts instead of duplicating. NULL for
+-- synthetic/seeded campaigns. ADD COLUMN IF NOT EXISTS (rather than inlining
+-- it above) so re-running this file against an already-deployed database
+-- upgrades it instead of being skipped by CREATE TABLE IF NOT EXISTS.
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS external_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_channel_external_id
+  ON campaigns(channel, external_id) WHERE external_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS daily_stats (
   id           SERIAL PRIMARY KEY,
@@ -72,3 +82,26 @@ CREATE INDEX IF NOT EXISTS idx_touchpoints_channel ON touchpoints(channel);
 CREATE INDEX IF NOT EXISTS idx_touchpoints_touched_at ON touchpoints(touched_at);
 CREATE INDEX IF NOT EXISTS idx_customer_journeys_converted_at ON customer_journeys(converted_at);
 CREATE INDEX IF NOT EXISTS idx_attribution_results_period ON attribution_results(period_days, model);
+
+-- Pre-aggregated channel x day rollup. daily_stats joined to campaigns is the
+-- hottest query on the dashboard (run on every page load); at low-thousands of
+-- rows the live JOIN+GROUP BY is fine, but it degrades linearly with
+-- touchpoint/campaign volume. This view lets that query become a flat scan
+-- instead, and is refreshed out-of-band by the attribution cron job rather
+-- than recomputed per request.
+CREATE MATERIALIZED VIEW IF NOT EXISTS channel_daily_rollup AS
+SELECT
+  c.channel,
+  ds.date,
+  SUM(ds.impressions) AS impressions,
+  SUM(ds.clicks)       AS clicks,
+  SUM(ds.spend)        AS spend,
+  SUM(ds.conversions)  AS conversions
+FROM daily_stats ds
+JOIN campaigns c ON c.id = ds.campaign_id
+GROUP BY c.channel, ds.date;
+
+-- REFRESH MATERIALIZED VIEW CONCURRENTLY requires a unique index on the view
+-- so refreshes don't block concurrent dashboard reads.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_daily_rollup_channel_date
+  ON channel_daily_rollup(channel, date);
