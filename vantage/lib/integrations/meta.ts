@@ -30,11 +30,17 @@ export interface MetaDailyInsight {
 
 class MetaApiError extends Error {}
 
-async function graphGet<T>(path: string, params: Record<string, string>): Promise<T> {
+async function graphGet<T>(
+  path: string,
+  params: Record<string, string>,
+  accessToken: string,
+): Promise<T> {
   const url = new URL(`${GRAPH_API_BASE}/${path}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
-  const res = await fetch(url.toString());
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
   const body = await res.json();
   if (!res.ok) {
     throw new MetaApiError(
@@ -57,11 +63,11 @@ export async function fetchMetaCampaigns(
       daily_budget?: string;
       lifetime_budget?: string;
     }>;
-  }>(`act_${adAccountId}/campaigns`, {
-    fields: "id,name,start_time,stop_time,daily_budget,lifetime_budget",
-    access_token: accessToken,
-    limit: "200",
-  });
+  }>(
+    `act_${adAccountId}/campaigns`,
+    { fields: "id,name,start_time,stop_time,daily_budget,lifetime_budget", limit: "200" },
+    accessToken,
+  );
 
   return data.data.map((c) => {
     const budgetCents = c.lifetime_budget ?? c.daily_budget;
@@ -90,14 +96,17 @@ export async function fetchMetaInsights(
       spend: string;
       actions?: Array<{ action_type: string; value: string }>;
     }>;
-  }>(`act_${adAccountId}/insights`, {
-    level: "campaign",
-    time_increment: "1",
-    time_range: JSON.stringify({ since: sinceDate, until: untilDate }),
-    fields: "campaign_id,date_start,impressions,clicks,spend,actions",
-    access_token: accessToken,
-    limit: "500",
-  });
+  }>(
+    `act_${adAccountId}/insights`,
+    {
+      level: "campaign",
+      time_increment: "1",
+      time_range: JSON.stringify({ since: sinceDate, until: untilDate }),
+      fields: "campaign_id,date_start,impressions,clicks,spend,actions",
+      limit: "500",
+    },
+    accessToken,
+  );
 
   return data.data.map((row) => ({
     externalCampaignId: row.campaign_id,
